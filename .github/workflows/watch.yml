@@ -1,0 +1,70 @@
+# 꺼졌으면 **메일이 가게 한다** (1121)
+#
+# 왜 따로 있나
+# ------------
+# 깨우는 일(`clock.yml`)은 예약에 기댄다. 그런데 깃허브 문서가 이렇게 적어 두었다.
+#
+#   "If the load is sufficiently high enough, some queued jobs may be dropped."
+#
+# **버려질 수 있다고 문서가 말한다.** 실제로 1118~1121 에 세어 보니 비공개 쪽
+# 깨우기 예약은 23자리 중 4번(17%)만 떴고, 이 저장소의 10분 예약은 만든 지
+# 네 시간 반 동안 한 번도 안 떴다. 같은 계정의 **하루 한 번짜리** 예약은 제때
+# 떴다 — 드물게 도는 것은 뜨고, 촘촘한 것이 버려지는 모양새다.
+#
+# 그래서 **깨우는 것과 알리는 것을 가른다.**
+#
+#   clock.yml  10분마다 — 뜨면 버는 것. 안 떠도 그만.
+#   watch.yml  하루 두 번 — **떴는지 안 떴는지를 사람에게 알린다.**
+#
+# 이 일은 사이트를 열어 보고, **잠들어 있었으면 빨갛게 끝낸다.** 깃허브가
+# 저장소 주인에게 메일을 보낸다. 쓰시는 분이 날마다 들여다보지 않아도 된다 —
+# 그게 이 파일의 전부다. 조용하면 잘 돌고 있는 것이다.
+#
+# 왜 하루 두 번인가
+# -----------------
+# 스트림릿은 방문이 **12시간** 없으면 재운다. 12시간 간격 두 자리면 한쪽이
+# 버려져도 다른 쪽이 그 창을 덮는다. 자리를 늘리는 것은 clock.yml 이 한다.
+# 여기는 **적게 돌아서 잘 뜨는 쪽**에 건다.
+
+name: Watch
+
+on:
+  schedule:
+    # 12시간 간격 두 자리. 정각과 붐비는 때를 피해 :17 로 둔다.
+    - cron: '17 5,17 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            python -m playwright install --with-deps chromium
+          fi
+
+      - name: 열어 보고 잠들었으면 알린다
+        run: |
+          set -o pipefail
+          python keep_awake.py | tee /tmp/keep.log
+          if grep -q "잠듦" /tmp/keep.log; then
+            echo "::error::사이트가 **잠들어 있었습니다** — 깨웠지만, 깨우기 예약이 12시간을 못 메우고 있습니다. clock.yml 자취를 보세요."
+            exit 1
+          fi
+          echo "깨어 있었습니다 — 할 일 없음"
