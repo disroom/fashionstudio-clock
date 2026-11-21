@@ -1,0 +1,137 @@
+# 늘 켜진 주소가 잠들지 않게 **10분마다 한 번 열어 본다**
+#
+# 왜 저장소가 따로인가
+# --------------------
+# 앱 저장소는 **비공개**다. 깃허브 Actions 는 비공개 저장소에서 분이 과금되고
+# (무료 2,000분/달), 한 판에 최소 1분이 든다. 그래서 거기서는 예약을 촘촘히
+# 깔 수가 없었다.
+#
+# 깃허브 예약(cron)은 **늦거나 통째로 건너뛴다.** 2026-11-18~21 에 실제로 센
+# 값이 **23자리 중 4번(17%)** 이었다. 12시간 안에 한 자리도 안 뜨면 앱이 잠들고,
+# 그러면 처음 들어온 분이 「Yes, get this app back up!」 화면을 보고 1~2분
+# 기다린다. 그 확률이
+#
+#     하루 12자리(2시간)  32.7%      하루 48자리(30분)   1.1%
+#     하루 24자리(1시간)  10.7%      하루 144자리(10분)  0.0002%
+#
+# **공개 저장소는 분이 공짜다.** 그래서 시계만 여기로 내왔다. 10분마다 깔면
+# 구멍이 사실상 안 난다.
+#
+# 무엇이 여기 있고 무엇이 없나
+# ----------------------------
+# 있는 것: 공개 주소 하나를 브라우저로 열어 보는 스크립트와 이 파일.
+# 없는 것: 열쇠, 토큰, 앱 코드, 거래처 이름. **아무 비밀도 두지 않는다.**
+# 그래서 이 저장소는 공개여도 되고, 앱 저장소는 비공개로 남는다.
+#
+# 너무 자주 열지는 않는다
+# -----------------------
+# 자리를 늘린 것은 **확률을 메우려는 것**이지 자주 열려는 게 아니다. 세 시간
+# 안에 이미 다녀왔으면 아래 「건너뛰기」가 그 판을 몇 초에 끝낸다. 스트림릿
+# 쪽은 「깨어 있게 유지하는 것은 지원 기능이 아니다」라고 말하고 있으니,
+# 기준(12시간)에 견주어 넉넉한 만큼만 두드린다.
+
+name: Clock
+
+on:
+  schedule:
+    # 10분마다. 정각은 피한다 — 거기가 제일 붐빈다.
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read      # 「마지막으로 언제 다녀왔나」를 보려면 지난 판을 읽어야 한다
+
+concurrency:
+  group: clock
+  cancel-in-progress: false
+
+jobs:
+  visit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 너무 자주면 건너뛴다
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "손으로 부른 판입니다 — 그냥 갑니다"
+            echo "go=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          LAST=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/clock.yml/runs?status=success&per_page=1" \
+            --jq '.workflow_runs[0].run_started_at // ""' 2>/dev/null || echo "")
+          if [ -z "$LAST" ]; then
+            echo "지난 판을 못 읽었습니다 — 그냥 갑니다"
+            echo "go=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          NOW=$(date -u +%s); T=$(date -u -d "$LAST" +%s 2>/dev/null || echo 0)
+          H=$(( (NOW - T) / 3600 ))
+          if [ "$T" -gt 0 ] && [ "$H" -lt 3 ]; then
+            echo "$H 시간 전에 이미 다녀왔습니다 — 건너뜁니다 ($LAST)"
+            echo "go=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "마지막 방문이 $H 시간 전입니다 — 엽니다 ($LAST)"
+            echo "go=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.guard.outputs.go == '1'
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        if: steps.guard.outputs.go == '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Playwright
+        if: steps.guard.outputs.go == '1'
+        run: |
+          # 러너에 구글 크롬이 이미 있다. 있으면 400MB 를 또 받지 않는다.
+          python -m pip install --upgrade pip
+          pip install playwright
+          if command -v google-chrome >/dev/null 2>&1; then
+            echo "러너 크롬을 씁니다: $(google-chrome --version)"
+          else
+            echo "러너에 크롬이 없습니다 — chromium 을 받습니다"
+            python -m playwright install --with-deps chromium
+          fi
+
+      - name: 열어 본다
+        if: steps.guard.outputs.go == '1'
+        id: visit
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python keep_awake.py | tee /tmp/keep.log
+
+      - name: 안 되면 chromium 받아 다시
+        if: steps.guard.outputs.go == '1' && steps.visit.outcome == 'failure'
+        run: |
+          set -o pipefail
+          python -m playwright install --with-deps chromium
+          python keep_awake.py | tee /tmp/keep.log
+
+      - name: 한 줄 남긴다
+        if: always() && steps.guard.outputs.go == '1'
+        run: |
+          # 열어 보지 않고도 결과를 알 수 있게. 「자고 있었나」가 특히 중요하다 —
+          # 자고 있었다면 간격이 모자란 것이다.
+          {
+            echo "## 늘 켜진 주소 깨우기"
+            echo ""
+            echo "- 돌린 때(UTC): $(date -u '+%Y-%m-%d %H:%M')"
+            if grep -q "잠듦" /tmp/keep.log 2>/dev/null; then
+              echo "- **자고 있었습니다** — 깨웠습니다. 간격이 모자란지 살펴보세요."
+            else
+              echo "- 이미 깨어 있었습니다."
+            fi
+            echo ""
+            echo '```'
+            tail -20 /tmp/keep.log 2>/dev/null || echo "(기록 없음)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
