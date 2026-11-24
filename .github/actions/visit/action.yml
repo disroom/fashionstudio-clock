@@ -1,0 +1,138 @@
+# 사이트를 **한 번 열어 보는 일**을 여기 한 군데에 둔다 (1124)
+#
+# 왜 동작으로 뺐나
+# ----------------
+# 여는 일을 하는 워크플로가 넷이 되었다(clock, clock-b, clock-c, clock-d).
+# 까닭은 아래 「왜 넷인가」에 적어 둔다. 똑같은 마흔 줄을 네 번 베껴 두면
+# 한 군데 고칠 때 세 군데를 잊는다. 그래서 일은 여기 한 번만 적고, 워크플로는
+# **언제 부를지만** 적는다.
+#
+# 왜 넷인가 — **예약은 촘촘할수록 버려진다** (1124 실측)
+# ------------------------------------------------------
+# 이레 동안 예약이 실제로 뜬 비율을 세어 봤다.
+#
+#     공개 시계 (30분마다)   336자리 중   8번   2.4%
+#     앱 시계   (2시간마다)   84자리 중  12번  14.3%
+#     비공개 시계(3시간마다)   56자리 중  11번  19.6%
+#     비공개 그물(4시간마다)   42자리 중  10번  23.8%
+#     공개 감시 (하루 두 번)   14자리 중   4번  28.6%
+#
+# 자리를 아무리 깔아도 **한 워크플로당 하루 한두 번**으로 수렴한다. 30분마다
+# 336자리를 깔아 둔 쪽이 하루 두 번짜리보다 **적게** 떴다. 깃허브가 자리 수가
+# 아니라 **일(workflow) 단위로 솎아 내는** 모양새다.
+#
+# 그러면 늘리는 길은 자리가 아니라 **파일 수**다. 그래서 넷으로 나누고, 각
+# 파일은 하루 네 자리만 **서로 어긋나게** 깐다. 공개 저장소라 분은 공짜다.
+#
+# 그래도 겹쳐 열지는 않는다 — 아래 「너무 자주면 건너뛴다」가 **이 저장소에서
+# 여는 모든 일**(Clock*·Watch)의 자취를 함께 보고, 세 시간 안에 누가 다녀왔으면
+# 그 판을 몇 초에 끝낸다.
+
+name: 사이트 한 번 열어 보기
+description: 너무 자주면 건너뛰고, 아니면 진짜 브라우저로 열어 본다
+
+inputs:
+  token:
+    description: 지난 판을 읽을 토큰 (github.token 이면 된다)
+    required: true
+  min-hours:
+    description: 이 시간 안에 누가 다녀왔으면 건너뛴다
+    required: false
+    default: '3'
+  force:
+    description: 'true 면 건너뛰기를 끄고 무조건 연다'
+    required: false
+    default: 'false'
+
+outputs:
+  opened:
+    description: 실제로 열었으면 1
+    value: ${{ steps.guard.outputs.go }}
+
+runs:
+  using: composite
+  steps:
+    - name: 너무 자주면 건너뛴다
+      id: guard
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        if [ "${{ inputs.force }}" = "true" ] || [ "${{ github.event_name }}" != "schedule" ]; then
+          echo "손으로 부른 판입니다 — 그냥 갑니다"
+          echo "go=1" >> "$GITHUB_OUTPUT"; exit 0
+        fi
+        # 이 저장소에서 **여는 일 전부**의 자취를 본다. 제 파일만 보면 넷이
+        # 저마다 「나는 오래 안 열었다」며 잇달아 연다.
+        LAST=$(gh api "repos/${{ github.repository }}/actions/runs?status=success&per_page=50" \
+          --jq '[.workflow_runs[] | select(.name | test("^(Clock|Watch)")) | .run_started_at] | max // ""' \
+          2>/dev/null || echo "")
+        if [ -z "$LAST" ]; then
+          echo "지난 판을 못 읽었습니다 — 그냥 갑니다"
+          echo "go=1" >> "$GITHUB_OUTPUT"; exit 0
+        fi
+        NOW=$(date -u +%s); T=$(date -u -d "$LAST" +%s 2>/dev/null || echo 0)
+        H=$(( (NOW - T) / 3600 ))
+        if [ "$T" -gt 0 ] && [ "$H" -lt ${{ inputs.min-hours }} ]; then
+          echo "$H 시간 전에 이미 다녀왔습니다 — 건너뜁니다 ($LAST)"
+          echo "go=0" >> "$GITHUB_OUTPUT"
+        else
+          echo "마지막 방문이 $H 시간 전입니다 — 엽니다 ($LAST)"
+          echo "go=1" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Setup Python
+      if: steps.guard.outputs.go == '1'
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Playwright
+      if: steps.guard.outputs.go == '1'
+      shell: bash
+      run: |
+        # 러너에 구글 크롬이 이미 있다. 있으면 400MB 를 또 받지 않는다.
+        python -m pip install --upgrade pip
+        pip install playwright
+        if command -v google-chrome >/dev/null 2>&1; then
+          echo "러너 크롬을 씁니다: $(google-chrome --version)"
+        else
+          echo "러너에 크롬이 없습니다 — chromium 을 받습니다"
+          python -m playwright install --with-deps chromium
+        fi
+
+    - name: 열어 본다
+      if: steps.guard.outputs.go == '1'
+      id: visit
+      continue-on-error: true
+      shell: bash
+      run: |
+        set -o pipefail
+        python keep_awake.py | tee /tmp/keep.log
+
+    - name: 안 되면 chromium 받아 다시
+      if: steps.guard.outputs.go == '1' && steps.visit.outcome == 'failure'
+      shell: bash
+      run: |
+        set -o pipefail
+        python -m playwright install --with-deps chromium
+        python keep_awake.py | tee /tmp/keep.log
+
+    - name: 한 줄 남긴다
+      if: always() && steps.guard.outputs.go == '1'
+      shell: bash
+      run: |
+        {
+          echo "## 늘 켜진 주소 깨우기"
+          echo ""
+          echo "- 돌린 때(UTC): $(date -u '+%Y-%m-%d %H:%M')"
+          if grep -q "잠듦" /tmp/keep.log 2>/dev/null; then
+            echo "- **자고 있었습니다** — 깨웠습니다. 간격이 모자란지 살펴보세요."
+          else
+            echo "- 이미 깨어 있었습니다."
+          fi
+          echo ""
+          echo '```'
+          tail -20 /tmp/keep.log 2>/dev/null || echo "(기록 없음)"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

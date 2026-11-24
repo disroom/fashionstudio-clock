@@ -1,0 +1,122 @@
+# 예약이 다 버려졌을 때 **그 자리에서 깨우는 그물** (1121, 1124 에 여기로 옮김)
+#
+# 예약(cron)은 늦거나 통째로 버려진다. 그런데 **dispatch 로 부른 것은 한 번도
+# 빠진 적이 없다.** 그래서 이 일은 「빈틈이 보이면 Clock A 를 손으로 부르듯
+# 부른다」. 예약 넷이 모두 버려진 날에도 이 한 줄이 사이트를 연다.
+#
+# 메일만 보내고 말지 않는 까닭
+# ----------------------------
+# 처음에는 빈틈을 보면 일부러 실패해서 메일만 보냈다. 메일은 알려 줄 뿐
+# 고치지 못한다. 사람이 읽고 손으로 눌러야 하는데, 자는 동안에는 아무도
+# 안 읽는다. 그래서 **먼저 고치고**, 정말 위험했을 때만 알린다.
+#
+#     8시간 넘게 아무도 안 열었다  → 지금 연다
+#     12시간을 넘겼다             → 열고 **메일도 보낸다**
+#
+# 12시간은 스트림릿이 재우는 선이다. 1124 에 10 → 12 로 올렸다. 10에서
+# 울리면 사이트가 멀쩡히 깨어 있는 날에도 운다.
+#
+# 「정말 잠들어 있었나」는 watch.yml 이 날마다 두 번 **직접 열어 보고** 알린다.
+# 여기 경보는 그 앞을 지키는 미리 알림이다.
+#
+# 1124: 이 일은 비공개 저장소(disroom/fashionstudio-keep-awake)에 있었다.
+#   거기서는 **제 저장소 자취만** 보여 거짓으로 울렸다. 여는 일이 모두 이
+#   공개 저장소로 모이면서 함께 왔다 — 이제 보는 것과 여는 것이 같은 자리다.
+
+name: Net
+
+on:
+  schedule:
+    # 하루 여섯 자리. 시계 넷과 비켜 둔다(:07).
+    - cron: '7 2,6,10,14,18,22 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '빈틈이 없어도 깨워 본다 (그물이 정말 고치는지 시험할 때)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  actions: write        # 빈틈을 보면 Clock A 를 **직접 부른다**
+
+concurrency:
+  group: net
+  cancel-in-progress: false
+
+jobs:
+  net:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 연 자취 가져오기
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # **이 저장소에서 사이트를 연 일 전부**를 본다 — Clock A·B·C·D 와 Watch.
+          #   한 파일만 보면 「나는 오래 안 열었다」가 참이어도 사이트는 멀쩡히
+          #   열려 있을 수 있다. 1124 에 그래서 거짓으로 울렸다.
+          gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
+            --jq '[.workflow_runs[]
+                   | select(.name | test("^(Clock|Watch)"))
+                   | {t: .run_started_at, e: .event, c: .conclusion}]' > runs.json
+          python -c "import json; print('가져온 줄 수:', len(json.load(open('runs.json'))))"
+
+      - name: 빈틈 살펴보기
+        id: look
+        continue-on-error: true
+        run: python .github/scripts/check_keep_awake.py runs.json | tee look.log
+
+      - name: 비었으면 지금 깨우기
+        id: wake
+        if: steps.look.outputs.wake == 'yes' || inputs.force
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "빈틈을 봤습니다: ${{ steps.look.outputs.why || '(시험 삼아 부름)' }}"
+          echo "Clock A 를 지금 부릅니다."
+          gh workflow run clock.yml --repo "${{ github.repository }}"
+          echo "불렀습니다. 자리를 잡을 때까지 기다립니다."
+          sleep 20
+          gh run list --repo "${{ github.repository }}" --workflow clock.yml \
+            --limit 3 --json createdAt,event,status \
+            --jq '.[] | "  \(.createdAt)  \(.event)  \(.status)"'
+
+      - name: 한 줄 남기기
+        if: always()
+        run: |
+          {
+            echo "## 깨우기 그물"
+            echo ""
+            echo "- 본 때(UTC): $(date -u '+%Y-%m-%d %H:%M')"
+            if [ "${{ steps.look.outputs.wake }}" = "yes" ]; then
+              echo "- **비어 있었습니다** — ${{ steps.look.outputs.why }}"
+              if [ "${{ steps.wake.outcome }}" = "success" ]; then
+                echo "- 그 자리에서 **깨웠습니다.**"
+              else
+                echo "- 깨우려다 **실패했습니다.** 손으로 'Clock A' 를 눌러 주세요."
+              fi
+            else
+              echo "- 빈틈 없이 돌고 있습니다."
+            fi
+            echo ""
+            echo '```'
+            cat look.log 2>/dev/null || echo "(기록 없음)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 위험했으면 메일 보내기
+        if: always()
+        run: |
+          if [ "${{ steps.look.outputs.wake }}" = "yes" ] && [ "${{ steps.wake.outcome }}" != "success" ]; then
+            echo "::error::깨우지 못했습니다. 사람이 손으로 'Clock A' 를 눌러야 합니다."
+            exit 1
+          fi
+          if [ "${{ steps.look.outputs.danger }}" = "yes" ]; then
+            echo "::error::깨우기는 했지만 빈틈이 위험할 만큼 컸습니다: ${{ steps.look.outputs.why }}"
+            exit 1
+          fi
+          echo "알릴 것 없습니다."

@@ -1,0 +1,42 @@
+# 늘 켜진 주소를 열어 보는 **넷 중 하나**. 하는 일은
+# `.github/actions/visit` 에 한 번만 적혀 있고, 여기는 **언제 부를지**만 적는다.
+#
+# 넷으로 나눈 까닭은 그 동작 파일 머리에 적어 두었다 — 간추리면, 예약은
+# 자리를 아무리 깔아도 **한 워크플로당 하루 한두 번**만 뜬다(1124 실측:
+# 30분마다 깐 336자리 중 8번, 2.4%). 그래서 자리가 아니라 **파일**을 늘린다.
+#
+# 이 파일의 자리: 01·07·13·19시 43분 (UTC). 넷이 서로 어긋나게 깔려 있다.
+
+name: Clock C
+
+on:
+  schedule:
+    - cron: '43 1,7,13,19 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '세 시간 안에 다녀왔어도 무조건 연다'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  actions: read      # 「마지막으로 언제 다녀왔나」를 보려면 지난 판을 읽어야 한다
+
+concurrency:
+  # 넷이 같은 자리를 나눠 쓴다. 겹쳐 뜨면 뒤엣것은 앞엣것이 끝난 뒤에 돌고,
+  # 그때는 건너뛰기에 걸려 몇 초에 끝난다.
+  group: visit
+  cancel-in-progress: false
+
+jobs:
+  visit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/visit
+        with:
+          token: ${{ github.token }}
+          force: ${{ inputs.force }}

@@ -24,8 +24,12 @@ import time
 
 DEFAULT_URL = "https://fashionstudio.streamlit.app/~/+/"
 
-# 화면이 떴다고 볼 표시
-떴다 = ("AI STUDIO", "패션 디자이너 작업실", "상품 작업", "패션 트렌드")
+# 화면이 떴다고 볼 표시. 테넌트가 바뀌어도 걸리도록 여러 개를 본다.
+#   1124: 비공개 쪽 사본이 보던 이름들(DK Studio AI · MIND_PRINT)을 합쳤다.
+#   둘을 하나로 모으면서 **넓은 쪽**을 남긴다 — 좁은 쪽을 남기면 테넌트를
+#   바꾼 날 「화면이 안 떴다」고 틀리게 운다.
+떴다 = ("AI STUDIO", "DK Studio AI", "MIND_PRINT", "패션 디자이너 작업실",
+        "상품 작업", "패션 트렌드")
 
 # 잠들어 있을 때 나오는 단추
 깨우기 = "get this app back up"
@@ -98,6 +102,10 @@ def main() -> int:
               % (걸린, " · 잠들어 있던 것을 깨웠습니다" if 눌렀나 else ""))
         print("[대기] %d초 머뭅니다" % a.hold)
         time.sleep(a.hold)
+
+        # 1124: **무엇이 떴는지** 한 줄 남긴다. 테넌트가 어긋나면 여기서 보인다.
+        #   (비공개 쪽 사본에만 있던 것을 합치면서 가져왔다.)
+        print("[화면] %s" % " ".join(본것.split())[:80])
         br.close()
     return 0
 
